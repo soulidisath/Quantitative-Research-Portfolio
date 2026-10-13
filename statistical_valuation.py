@@ -1,13 +1,14 @@
+import logging
+import warnings
+from typing import Dict, List
 import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.optimize import minimize
-from typing import Dict, List
-import logging
-import warnings
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 class StatisticalValuationEngine:
     """
@@ -55,9 +56,9 @@ class StatisticalValuationEngine:
         
         # Box-Cox and Log transforms strictly require strictly positive inputs.
         # Shift the distribution if non-positive values exist.
-        shift_value = 0
+        shift_value = 0.0
         if np.any(data <= 0):
-            shift_value = np.abs(np.min(data)) + 1e-5
+            shift_value = float(np.abs(np.min(data)) + 1e-5)
         
         shifted_data = data + shift_value
 
@@ -91,7 +92,7 @@ class StatisticalValuationEngine:
         # 4. Power Ladder Transformations (Squares, Cubes, Square Roots, Inverses)
         for i in np.arange(-2, 2.1, 0.2):
             if np.isclose(i, 0): 
-                continue # Zero power is equivalent to Log, already computed
+                continue  # Zero power is equivalent to Log, already computed
                 
             power_data = shifted_data ** i
             results.append({
