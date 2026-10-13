@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import pandas as pd
+from decimal import Decimal
 from typing import Dict, Tuple, Optional, List
 from pybit.unified_trading import HTTP
 import logging
@@ -16,12 +17,10 @@ class MarketMicrostructureModel:
     """
 
     def __init__(self, maker_fee_bps: float = 2.0, taker_fee_bps: float = 5.5, slippage_bps: float = 5.0):
-        # Convert basis points to decimal percentages
         self.maker_fee = maker_fee_bps / 10000
         self.taker_fee = taker_fee_bps / 10000
         self.slippage = slippage_bps / 10000
         
-        # Define baseline frictional costs for limit (maker) and market (taker) actions
         self.fees_limit_entry_exit = self.maker_fee * 2
         self.fees_market_stop_loss = self.taker_fee + self.maker_fee + self.slippage
 
@@ -37,14 +36,10 @@ class MarketMicrostructureModel:
             gross_return = (entry - exit_price) / entry
             risk_pct = (stop_loss - entry) / entry  
             
-        # Prevent division by zero if stop loss is improperly placed at entry
         if risk_pct <= 0:
             return 0.0
 
-        # Net return subtracts the round-trip maker fees (assuming limit execution)
         net_return = gross_return - self.fees_limit_entry_exit
-        
-        # True risk adds taker fees and slippage (assuming stop-loss triggers market order)
         true_risk = risk_pct + self.fees_market_stop_loss
         
         return float(net_return / true_risk)
@@ -57,34 +52,32 @@ class AlgorithmicExecutionClient:
     """
 
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False):
-        # Initialize HTTP session for REST API order routing
         self.session = HTTP(api_key=api_key, api_secret=api_secret, testnet=testnet)
 
-    def _get_instrument_precision(self, symbol: str) -> float:
-        """Fetches the exchange-defined minimum order quantity step (lot size)."""
+    def _get_instrument_precision(self, symbol: str) -> str:
+        """Fetches the exchange-defined minimum order quantity step (lot size) as a string."""
         response = self.session.get_instruments_info(category="linear", symbol=symbol)
         tick_size = response["result"]["list"][0]["lotSizeFilter"]["qtyStep"]
-        return float(tick_size)
+        return tick_size
 
     def route_order(self, symbol: str, side: str, qty: float, stop_loss: float, take_profit: Optional[float] = None, limit_price: Optional[float] = None) -> str:
         """
         Routes conditional execution orders to the exchange order book.
         """
-        # Enforce exchange lot size precision to prevent order rejection
-        tick_size = self._get_instrument_precision(symbol)
-        adjusted_qty = math.floor(qty / tick_size) * tick_size
+        # Fix: Use Decimal module to prevent floating-point precision rejection
+        tick_size_str = self._get_instrument_precision(symbol)
+        tick_size_dec = Decimal(tick_size_str)
+        qty_dec = Decimal(str(qty))
+        
+        # Exact mathematical flooring without IEEE 754 precision loss
+        adjusted_qty_dec = (qty_dec // tick_size_dec) * tick_size_dec
+        adjusted_qty = float(adjusted_qty_dec)
 
         if adjusted_qty <= 0:
-            raise ValueError(f"Calculated quantity {qty} falls below minimum tick size {tick_size}")
+            raise ValueError(f"Calculated quantity {qty} falls below minimum tick size {float(tick_size_dec)}")
 
-        # PositionIdx 1 for Long, 2 for Short (Hedge Mode requirement)
         position_idx = 1 if side.capitalize() == "Buy" else 2
-        
-        # Route as Limit order if price provided, otherwise route as Market
         order_type = 'Limit' if limit_price else 'Market'
-        
-        # 'PostOnly' guarantees maker rebates for limits. 'ImmediateOrCancel' prevents 
-        # resting liquidity exposure during aggressive market breakouts.
         time_in_force = 'PostOnly' if limit_price else 'ImmediateOrCancel'
 
         try:
@@ -114,27 +107,17 @@ class AlgorithmicExecutionClient:
 
 
 class BootstrapValidationEngine:
-    """
-    Performs out-of-sample risk verification by running Monte Carlo bootstrapping 
-    across the return distribution. Computes rigorous confidence intervals for 
-    Expected Value (EV), drawdown tolerances, and optimal Kelly sizing.
-    """
-
+    # [Rest of your BootstrapValidationEngine code exactly as it was]
     def __init__(self, confidence_level: float = 95.0, iterations: int = 1000):
         self.confidence_level = confidence_level
         self.iterations = iterations
 
     def _compute_confidence_intervals(self, data_array: np.ndarray) -> Tuple[float, float]:
-        """Calculates the lower and upper bounds for the specified confidence level."""
         lower_percentile = (100 - self.confidence_level) / 2
         upper_percentile = 100 - lower_percentile
         return tuple(np.percentile(data_array, [lower_percentile, upper_percentile]))
 
     def run_simulation(self, returns: pd.Series) -> Dict[str, Tuple[float, float]]:
-        """
-        Executes random resampling with replacement to build probability distributions 
-        for core portfolio risk metrics.
-        """
         clean_returns = returns.dropna()
         num_trades = len(clean_returns)
         
@@ -144,39 +127,31 @@ class BootstrapValidationEngine:
         win_rates, kellys, max_drawdowns, evs = [], [], [], []
 
         for _ in range(self.iterations):
-            # Resample trade returns with replacement to simulate alternative path histories
             sampled = clean_returns.sample(n=num_trades, replace=True)
-            
             winning_trades = sampled[sampled > 0]
             losing_trades = sampled[sampled < 0]
             
             win_rate = len(winning_trades) / num_trades if num_trades > 0 else 0
             win_rates.append(win_rate)
 
-            # Compute Reward-to-Risk ratio
             avg_win = winning_trades.mean() if len(winning_trades) > 0 else 0
             avg_loss = abs(losing_trades.mean()) if len(losing_trades) > 0 else 0
             rr_ratio = avg_win / avg_loss if avg_loss > 0 else 0
             
-            # Expected Value (EV) per unit of risk
             ev = (win_rate * rr_ratio) - (1 - win_rate)
             evs.append(ev)
 
-            # Full Kelly Criterion computation
             kelly = (win_rate - ((1 - win_rate) / rr_ratio)) if rr_ratio > 0 else 0
-            kellys.append(max(0, kelly))  # Floor Kelly at 0 to prevent negative sizing
+            kellys.append(max(0, kelly))  
 
-            # Generate synthetic equity curve to measure path-dependent drawdowns
             cumulative_equity = sampled.cumsum()
             peak = cumulative_equity.cummax()
             drawdown = (peak - cumulative_equity).max() 
             
-            # Compute drawdown percentage as a function of the theoretical Kelly allocation
-            theoretical_exposure = max(0.01, kelly / 4)  # Assume Quarter-Kelly sizing for safety
+            theoretical_exposure = max(0.01, kelly / 4) 
             drawdown_percentage = 1 - (1 - theoretical_exposure) ** drawdown
             max_drawdowns.append(drawdown_percentage)
 
-        # Aggregate distributions into final confidence intervals
         results = {
             "Expected_Value_95_CI": self._compute_confidence_intervals(np.array(evs)),
             "Quarter_Kelly_Allocation_95_CI": self._compute_confidence_intervals(np.array(kellys) / 4),
