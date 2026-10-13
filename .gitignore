@@ -1,0 +1,41 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Dask / Distributed
+dask-worker-space/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Optuna/SQLite databases (if you save studies locally)
+*.db
+*.sqlite3
+
+# Data files (keep your repo lightweight, avoid uploading massive tick data CSVs)
+*.csv
+*.dat
+*.hdf5
+*.parquet
+# Note: If you specifically want to upload your small 'es_sample_data.csv' 
+# for the hiring manager, add this line below to exempt it:
+!es_sample_data.csv
